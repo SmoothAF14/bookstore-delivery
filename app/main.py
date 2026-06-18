@@ -1,14 +1,15 @@
 """
 main.py — FastAPI application entrypoint for the delivery classification bot.
 
-Minimal bootable app: exposes `app` (the ASGI application) and a working
-/health endpoint so the container deploys cleanly. Delivery routers and the
-classification/dispatch wiring are still placeholders to be implemented.
+Wires CORS, the health probe, and the delivery router (classification +
+delivery-status timeline). Backend/tracking integration and auth are still to
+be layered in.
 """
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.config import settings
+from app.routers import delivery
 
 app = FastAPI(
     title="Enterprise Book Store — Delivery Classification Bot",
@@ -18,11 +19,9 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS — comma-separated origins from env (default: allow all for now).
-_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins if o.strip()],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,5 +34,4 @@ def health():
     return {"status": "ok"}
 
 
-# TODO: Wire routers — health (move here), delivery.
-# TODO: Load settings from app.core.config once implemented.
+app.include_router(delivery.router, prefix="/delivery", tags=["Delivery"])
