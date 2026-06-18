@@ -1,0 +1,95 @@
+services:
+  # ---------------------------------------------------------------------------
+  # FastAPI web service
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: bookstore-delivery
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "False"
+      - key: DJANGO_API_URL
+        sync: false
+      - key: TRACKING_SERVICE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      # Celery broker/backend — from the managed Redis instance below.
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+      # Auth — JWT_SECRET MUST equal the Django backend's SECRET_KEY.
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_USER_ID_CLAIM
+        value: user_id
+      - key: REQUIRE_AUTH
+        value: "True"
+
+  # ---------------------------------------------------------------------------
+  # Celery worker — executes scheduled classification/dispatch tasks
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: bookstore-delivery-worker
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A app.celery_app worker --loglevel=info"
+    envVars:
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+      - key: DJANGO_API_URL
+        sync: false
+      - key: TRACKING_SERVICE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # Celery beat — schedules periodic classification / dispatch jobs
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: bookstore-delivery-beat
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A app.celery_app beat --loglevel=info"
+    envVars:
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: bookstore-delivery-redis
+          property: connectionString
+
+  # ---------------------------------------------------------------------------
+  # Redis — Celery broker + result backend
+  # ---------------------------------------------------------------------------
+  - type: redis
+    name: bookstore-delivery-redis
+    ipAllowList: []
+    plan: free
