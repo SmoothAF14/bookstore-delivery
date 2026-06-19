@@ -18,3 +18,8 @@ python-decouple==3.8
 
 # JWT verification — validates access tokens issued by the Django backend
 pyjwt==2.10.1
+
+# LLM SDK (OpenRouter, OpenAI-compatible) — delivery is the 3rd AI feature;
+# the LLM reviews/adjusts the rule-based classification. Same key as the
+# assistant + tracking bots.
+openai==1.59.6

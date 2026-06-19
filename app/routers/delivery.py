@@ -13,9 +13,10 @@ as a Celery task for the async/scheduled path (see app/tasks/delivery_tasks.py).
 """
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core import tracking_client
+from app.core import backend_client
 from app.core.auth import AuthenticatedUser, require_user
 from app.schemas.delivery import (
     ClassifyOrderRequest,
@@ -35,7 +36,24 @@ def classify_order(
     request: ClassifyOrderRequest,
     user: AuthenticatedUser = Depends(require_user),
 ) -> DispatchDecision:
-    """Classify an order and return its dispatch decision."""
+    """Classify an order from a supplied payload and return its dispatch decision."""
+    return dispatch_service.decide(request)
+
+
+@router.get("/{order_id}/classify", response_model=DispatchDecision)
+def classify_by_order_id(
+    order_id: str,
+    user: AuthenticatedUser = Depends(require_user),
+) -> DispatchDecision:
+    """Fetch a real order from the Django backend by id and classify it."""
+    try:
+        order = backend_client.get_order(order_id, user.access_token)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not read order: {exc}") from exc
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    request = backend_client.order_to_classify_request(order)
+    request.order_id = order_id
     return dispatch_service.decide(request)
 
 
@@ -45,7 +63,7 @@ def order_timeline(
     request: ClassifyOrderRequest,
     user: AuthenticatedUser = Depends(require_user),
 ) -> DeliveryTimelineResponse:
-    """Build the delivery-status timeline for an order.
+    """Build the delivery-status timeline for an order from a supplied payload.
 
     Starts from the classification/dispatch lead-in stages, then pulls the
     tracking bot's checkpoints (best-effort) and merges them so the movement
@@ -53,10 +71,33 @@ def order_timeline(
     """
     # Keep the path order_id authoritative over any body value.
     request.order_id = order_id
+    return _build_timeline(order_id, request, user.access_token)
+
+
+@router.get("/{order_id}/timeline", response_model=DeliveryTimelineResponse)
+def order_timeline_by_id(
+    order_id: str,
+    user: AuthenticatedUser = Depends(require_user),
+) -> DeliveryTimelineResponse:
+    """Build the delivery-status timeline by fetching the real order from the
+    backend (no request body needed). This is what the orders page calls."""
+    try:
+        order = backend_client.get_order(order_id, user.access_token)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not read order: {exc}") from exc
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    request = backend_client.order_to_classify_request(order)
+    request.order_id = order_id
+    return _build_timeline(order_id, request, user.access_token)
+
+
+def _build_timeline(order_id, request, access_token) -> DeliveryTimelineResponse:
+    """Shared timeline builder: classify, then merge live tracking checkpoints."""
     decision = dispatch_service.decide(request)
     timeline = timeline_service.build_initial_timeline(decision)
 
-    state = tracking_client.get_tracking_state(order_id, user.access_token)
+    state = tracking_client.get_tracking_state(order_id, access_token)
     if state and state.checkpoints:
         timeline = timeline_service.merge_tracking_checkpoints(timeline, state.checkpoints)
 
