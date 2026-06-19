@@ -95,7 +95,9 @@ def order_timeline_by_id(
 def _build_timeline(order_id, request, access_token) -> DeliveryTimelineResponse:
     """Shared timeline builder: classify, then merge live tracking checkpoints."""
     decision = dispatch_service.decide(request)
-    timeline = timeline_service.build_initial_timeline(decision)
+    # Anchor the lead-in stage timestamps to when the order was placed, so they
+    # don't drift on refresh either.
+    timeline = timeline_service.build_initial_timeline(decision, placed_at=request.placed_at)
 
     state = tracking_client.get_tracking_state(order_id, access_token)
     if state and state.checkpoints:

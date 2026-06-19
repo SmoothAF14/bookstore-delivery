@@ -61,3 +61,23 @@ def test_dispatch_decision_eta_after_now():
     assert decision.in_stock is True
     # ETA is in the future relative to placement.
     assert decision.dispatch_eta is not None
+
+
+def test_dispatch_eta_anchored_to_placed_at():
+    # ETA must be placed_at + SLA, NOT now + SLA — so it stays fixed.
+    from datetime import datetime, timedelta, timezone
+
+    placed = datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc)
+    req = ClassifyOrderRequest(
+        order_id="o1",
+        items=[{"book_id": "b1", "quantity": 1, "unit_price": 100.0, "stock": 10}],
+        placed_at=placed,
+    )
+    d1 = dispatch_service.decide(req)
+    # Standard tier SLA is 24h by default.
+    expected = placed + timedelta(hours=settings.dispatch_hours_standard)
+    assert d1.dispatch_eta == expected
+
+    # Calling again later yields the SAME ETA (not shifted by wall-clock time).
+    d2 = dispatch_service.decide(req)
+    assert d2.dispatch_eta == d1.dispatch_eta
