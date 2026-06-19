@@ -36,6 +36,10 @@ class ClassifyOrderRequest(BaseModel):
     # Optional; recomputed from items when omitted so the bot can't be fed a
     # mismatched total.
     total_amount: float | None = Field(default=None, ge=0)
+    # When the order was placed (order.created_at). The dispatch ETA is anchored
+    # to this, NOT to the current time — so the ETA stays fixed across refreshes.
+    # Falls back to "now" only when the caller can't supply it.
+    placed_at: datetime | None = None
 
 
 class DispatchDecision(BaseModel):

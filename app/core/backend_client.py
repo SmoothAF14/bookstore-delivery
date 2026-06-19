@@ -9,6 +9,7 @@ The Django backend wraps responses in the envelope:
     {"status": {...}, "data": <payload>}
 """
 import logging
+from datetime import datetime
 
 import httpx
 
@@ -16,6 +17,17 @@ from app.core.config import settings
 from app.schemas.delivery import ClassifyOrderRequest, OrderItemIn
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_dt(value) -> datetime | None:
+    """Parse an ISO 8601 datetime string (e.g. order.created_at) safely."""
+    if not value:
+        return None
+    try:
+        # Django/DRF emits ISO 8601, sometimes with a trailing 'Z'.
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 def _client(access_token: str | None = None) -> httpx.Client:
@@ -44,7 +56,8 @@ def order_to_classify_request(order: dict) -> ClassifyOrderRequest:
 
     The order's items carry book, quantity, unit_price. `stock` is included per
     item when the backend provides it (book_stock); otherwise left None and
-    treated as available.
+    treated as available. `created_at` becomes `placed_at` so the dispatch ETA
+    is anchored to when the order was placed (stable across refreshes).
     """
     items: list[OrderItemIn] = []
     for it in order.get("items", []) or []:
@@ -62,4 +75,5 @@ def order_to_classify_request(order: dict) -> ClassifyOrderRequest:
         order_id=str(order.get("id") or ""),
         items=items,
         total_amount=(float(total) if total is not None else None),
+        placed_at=_parse_dt(order.get("created_at")),
     )

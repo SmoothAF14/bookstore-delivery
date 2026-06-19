@@ -110,7 +110,14 @@ def _llm_review_tier(
 
 
 def decide(request: ClassifyOrderRequest, placed_at: datetime | None = None) -> DispatchDecision:
-    """Classify the order and produce a full dispatch decision."""
+    """Classify the order and produce a full dispatch decision.
+
+    The dispatch ETA is anchored to when the order was PLACED — preferring an
+    explicit `placed_at` arg, then the request's `placed_at` (order.created_at),
+    and only falling back to "now" when neither is available. This keeps the ETA
+    stable across refreshes instead of sliding forward with the current time.
+    """
+    anchor = placed_at or request.placed_at
     tier, reasons = classifier.classify(request)
     qty = classifier.total_quantity(request.items)
     value = classifier.order_value(request.items, request.total_amount)
@@ -124,7 +131,7 @@ def decide(request: ClassifyOrderRequest, placed_at: datetime | None = None) -> 
     if llm_reason:
         reasons.append(f"LLM: {llm_reason}")
 
-    eta = dispatch_eta(tier, placed_at)
+    eta = dispatch_eta(tier, anchor)
     reasons.append(f"Dispatch SLA: {_TIER_SLA_HOURS[tier]}h from placement.")
 
     return DispatchDecision(
