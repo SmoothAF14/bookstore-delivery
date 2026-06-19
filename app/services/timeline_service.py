@@ -13,10 +13,12 @@ steps — see the TODOs.
 from datetime import datetime, timezone
 
 from app.schemas.delivery import (
+    TRACKING_STATUS_TO_STAGE,
     DeliveryTimelineResponse,
     DispatchDecision,
     TimelineEvent,
     TimelineStage,
+    TrackingCheckpoint,
 )
 
 # Human-readable labels for each stage.
@@ -87,6 +89,66 @@ def build_initial_timeline(
 
 # TODO: persist_timeline(order_id, timeline) — store in Redis/DB so reads don't
 #       require re-classification.
-# TODO: merge_tracking_checkpoints(order_id, checkpoints) — fold the tracking
-#       bot's IN_TRANSIT / OUT_FOR_DELIVERY / DELIVERED checkpoints into the
-#       stored timeline (see app/core/tracking_client.py).
+
+
+# Ordinal position of each stage, used to decide which stage is "current".
+_STAGE_SEQUENCE: list[TimelineStage] = [
+    TimelineStage.PLACED,
+    TimelineStage.CLASSIFIED,
+    TimelineStage.AWAITING_DISPATCH,
+    TimelineStage.DISPATCHED,
+    TimelineStage.IN_TRANSIT,
+    TimelineStage.OUT_FOR_DELIVERY,
+    TimelineStage.DELIVERED,
+]
+_STAGE_INDEX: dict[TimelineStage, int] = {s: i for i, s in enumerate(_STAGE_SEQUENCE)}
+
+
+def merge_tracking_checkpoints(
+    timeline: DeliveryTimelineResponse,
+    checkpoints: list[TrackingCheckpoint],
+) -> DeliveryTimelineResponse:
+    """Fold the tracking bot's checkpoints into the delivery-status timeline.
+
+    The tracking bot owns the movement stages (dispatched → in_transit →
+    out_for_delivery → delivered). For each checkpoint we map its status to a
+    TimelineStage and replace/append the corresponding event as completed. The
+    classification lead-in stages (placed/classified/awaiting_dispatch) from the
+    initial timeline are preserved.
+
+    The result is re-sorted into canonical stage order, and every stage at or
+    before the furthest-reached tracking stage is marked completed (with the
+    last one flagged current via the note left intact).
+    """
+    # Index existing events by stage so tracking can upgrade projected ones.
+    events_by_stage: dict[TimelineStage, TimelineEvent] = {e.stage: e for e in timeline.events}
+
+    furthest_idx = -1
+    for cp in checkpoints:
+        stage = TRACKING_STATUS_TO_STAGE.get(cp.status)
+        if stage is None:
+            continue
+        events_by_stage[stage] = TimelineEvent(
+            stage=stage,
+            label=cp.label,
+            at=cp.timestamp,
+            note=cp.location or cp.description,
+            completed=True,
+        )
+        furthest_idx = max(furthest_idx, _STAGE_INDEX[stage])
+
+    # Anything up to the furthest reached stage is completed; later stays projected.
+    merged: list[TimelineEvent] = []
+    for stage in _STAGE_SEQUENCE:
+        ev = events_by_stage.get(stage)
+        if ev is None:
+            continue
+        if _STAGE_INDEX[stage] <= furthest_idx:
+            ev = ev.model_copy(update={"completed": True})
+        merged.append(ev)
+
+    return DeliveryTimelineResponse(
+        order_id=timeline.order_id,
+        tier=timeline.tier,
+        events=merged,
+    )

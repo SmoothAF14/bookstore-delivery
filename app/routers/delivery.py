@@ -3,33 +3,90 @@ delivery.py — Delivery router.
 
 Endpoints:
   POST /delivery/classify             Classify an order -> DispatchDecision.
-  POST /delivery/{order_id}/timeline  Build the delivery-status timeline.
+  POST /delivery/{order_id}/timeline  Build the delivery-status timeline,
+                                      enriched with live tracking checkpoints.
+  POST /delivery/{order_id}/checkpoint  Receive a single pushed checkpoint from
+                                      the tracking bot (best-effort sync).
 
 Classification is synchronous and cheap (pure functions), and is also exposed
 as a Celery task for the async/scheduled path (see app/tasks/delivery_tasks.py).
 """
-from fastapi import APIRouter
+import logging
 
+from fastapi import APIRouter, Depends
+
+from app.core import tracking_client
+from app.core.auth import AuthenticatedUser, require_user
 from app.schemas.delivery import (
     ClassifyOrderRequest,
     DeliveryTimelineResponse,
     DispatchDecision,
+    TrackingCheckpoint,
 )
 from app.services import dispatch_service, timeline_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 @router.post("/classify", response_model=DispatchDecision)
-def classify_order(request: ClassifyOrderRequest) -> DispatchDecision:
+def classify_order(
+    request: ClassifyOrderRequest,
+    user: AuthenticatedUser = Depends(require_user),
+) -> DispatchDecision:
     """Classify an order and return its dispatch decision."""
     return dispatch_service.decide(request)
 
 
 @router.post("/{order_id}/timeline", response_model=DeliveryTimelineResponse)
-def order_timeline(order_id: str, request: ClassifyOrderRequest) -> DeliveryTimelineResponse:
-    """Build the delivery-status timeline for an order from its current items."""
+def order_timeline(
+    order_id: str,
+    request: ClassifyOrderRequest,
+    user: AuthenticatedUser = Depends(require_user),
+) -> DeliveryTimelineResponse:
+    """Build the delivery-status timeline for an order.
+
+    Starts from the classification/dispatch lead-in stages, then pulls the
+    tracking bot's checkpoints (best-effort) and merges them so the movement
+    stages reflect live shipment progress.
+    """
     # Keep the path order_id authoritative over any body value.
     request.order_id = order_id
     decision = dispatch_service.decide(request)
-    return timeline_service.build_initial_timeline(decision)
+    timeline = timeline_service.build_initial_timeline(decision)
+
+    state = tracking_client.get_tracking_state(order_id, user.access_token)
+    if state and state.checkpoints:
+        timeline = timeline_service.merge_tracking_checkpoints(timeline, state.checkpoints)
+
+    return timeline
+
+
+@router.post("/{order_id}/checkpoint", response_model=DeliveryTimelineResponse)
+def receive_checkpoint(
+    order_id: str,
+    checkpoint: TrackingCheckpoint,
+    user: AuthenticatedUser = Depends(require_user),
+) -> DeliveryTimelineResponse:
+    """Receive a single checkpoint pushed by the tracking bot.
+
+    This is the push counterpart to the pull in /timeline. The tracking bot's
+    delivery_client.notify_checkpoint POSTs here as the shipment advances. We
+    pull the full tracking state and re-merge so the returned timeline is
+    consistent (the single pushed checkpoint is a wake-up signal, not the whole
+    truth — tracking remains authoritative).
+
+    NOTE: without the order's items we can't re-run classification here, so the
+    returned timeline contains only the movement stages from tracking. The
+    orders page should call /timeline (which includes classification) for the
+    full picture; this endpoint exists so a push can trigger a refresh.
+    """
+    logger.info("Checkpoint pushed for order %s: %s", order_id, checkpoint.status)
+
+    state = tracking_client.get_tracking_state(order_id, user.access_token)
+    checkpoints = state.checkpoints if state and state.checkpoints else [checkpoint]
+
+    # Empty base timeline (no classification context on the push path).
+    base = DeliveryTimelineResponse(order_id=order_id, tier=None, events=[])
+    return timeline_service.merge_tracking_checkpoints(base, checkpoints)
