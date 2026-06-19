@@ -33,4 +33,6 @@ celery.conf.update(
 # app.tasks.delivery_tasks (not the default "tasks"), so name it explicitly.
 celery.autodiscover_tasks(["app.tasks"], related_name="delivery_tasks")
 
-# TODO: Define celery.conf.beat_schedule for periodic classification jobs.
+# Periodic schedule (Celery beat) — to be defined as scheduled classification
+# / dispatch jobs are added.
+celery.conf.beat_schedule = {}

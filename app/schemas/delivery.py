@@ -7,6 +7,7 @@ which the classifier reduces into a delivery tier and dispatch decision.
 """
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -74,3 +75,65 @@ class DeliveryTimelineResponse(BaseModel):
     order_id: str
     tier: DeliveryTier | None = None
     events: list[TimelineEvent]
+
+
+# ---------------------------------------------------------------------------
+# Shared contract with bookstore-tracking.
+#
+# These mirror the tracking bot's TrackingCheckpoint / TrackingStateResponse
+# (app/schemas/tracking.py in bookstore-tracking). The delivery bot pulls these
+# from GET {TRACKING_SERVICE_URL}/tracking/{order_id} and also accepts a single
+# pushed checkpoint on POST /delivery/{order_id}/checkpoint.
+# ---------------------------------------------------------------------------
+
+# Tracking statuses emitted by the tracking bot.
+TrackingStatus = Literal[
+    "pending",
+    "dispatched",
+    "in_transit",
+    "out_for_delivery",
+    "delivered",
+]
+
+# Map each tracking status onto our delivery-timeline stage.
+TRACKING_STATUS_TO_STAGE: dict[str, "TimelineStage"] = {
+    "pending": TimelineStage.AWAITING_DISPATCH,
+    "dispatched": TimelineStage.DISPATCHED,
+    "in_transit": TimelineStage.IN_TRANSIT,
+    "out_for_delivery": TimelineStage.OUT_FOR_DELIVERY,
+    "delivered": TimelineStage.DELIVERED,
+}
+
+
+class GeoPoint(BaseModel):
+    """A mock lat/lng point on the route (from the tracking bot)."""
+    lat: float
+    lng: float
+    label: str | None = None
+
+
+class TrackingCheckpoint(BaseModel):
+    """A single checkpoint from the tracking bot. Extra fields are ignored so
+    minor additions on the tracking side don't break the delivery bot."""
+    model_config = {"extra": "ignore"}
+
+    status: TrackingStatus
+    label: str
+    description: str | None = None
+    location: str | None = None
+    point: GeoPoint | None = None
+    timestamp: datetime
+    is_current: bool = False
+
+
+class TrackingState(BaseModel):
+    """The tracking bot's GET /tracking/{order_id} response (subset we need)."""
+    model_config = {"extra": "ignore"}
+
+    order_id: str
+    status: TrackingStatus
+    order_status: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    eta: datetime | None = None
+    checkpoints: list[TrackingCheckpoint] = Field(default_factory=list)
