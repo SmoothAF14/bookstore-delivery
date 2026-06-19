@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     jwt_user_id_claim: str = "user_id"
     require_auth: bool = True
 
+    # ── LLM (OpenRouter, OpenAI-compatible) ───────────────────
+    # The delivery bot is the 3rd AI feature: an LLM reviews the rule-based
+    # classification and may adjust the tier/priority with a short rationale.
+    # Uses the SAME LLM_API_KEY as the assistant + tracking bots. When unset,
+    # the bot falls back to pure rules so it always works.
+    llm_api_key: str = ""
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_model: str = "deepseek/deepseek-v3.2"
+    llm_max_tokens: int = 512
+    llm_enabled: bool = True
+
     # ── Classification thresholds ─────────────────────────────
     # An order is EXPRESS when its total value is at or above this (currency
     # units, matching the backend's total_amount).
