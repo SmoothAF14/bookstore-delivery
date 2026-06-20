@@ -115,21 +115,30 @@ def receive_checkpoint(
     """Receive a single checkpoint pushed by the tracking bot.
 
     This is the push counterpart to the pull in /timeline. The tracking bot's
-    delivery_client.notify_checkpoint POSTs here as the shipment advances. We
-    pull the full tracking state and re-merge so the returned timeline is
-    consistent (the single pushed checkpoint is a wake-up signal, not the whole
-    truth — tracking remains authoritative).
+    delivery_client.notify_checkpoint POSTs here as the shipment advances.
 
-    NOTE: without the order's items we can't re-run classification here, so the
-    returned timeline contains only the movement stages from tracking. The
-    orders page should call /timeline (which includes classification) for the
-    full picture; this endpoint exists so a push can trigger a refresh.
+    We fetch the order from the backend and rebuild the FULL classified timeline
+    (lead-in stages + classification), then merge the authoritative tracking
+    state. If the order can't be fetched, we degrade gracefully to a
+    movement-only timeline from the single pushed checkpoint so the push never
+    hard-fails.
     """
     logger.info("Checkpoint pushed for order %s: %s", order_id, checkpoint.status)
 
+    # Try to rebuild the full classified timeline (same as GET /timeline).
+    try:
+        order = backend_client.get_order(order_id, user.access_token)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Checkpoint push: order fetch failed for %s: %s", order_id, exc)
+        order = None
+
+    if order:
+        request = backend_client.order_to_classify_request(order)
+        request.order_id = order_id
+        return _build_timeline(order_id, request, user.access_token)
+
+    # Degraded path: no order context, so movement stages only.
     state = tracking_client.get_tracking_state(order_id, user.access_token)
     checkpoints = state.checkpoints if state and state.checkpoints else [checkpoint]
-
-    # Empty base timeline (no classification context on the push path).
     base = DeliveryTimelineResponse(order_id=order_id, tier=None, events=[])
     return timeline_service.merge_tracking_checkpoints(base, checkpoints)
